@@ -1,0 +1,115 @@
+{
+  "config": {
+    "abort": {
+      "already_configured": "This Cookidoo account is already configured",
+      "reauth_successful": "Re-authentication was successful",
+      "unique_id_mismatch": "The account does not match the one being re-authenticated"
+    },
+    "error": {
+      "cannot_connect": "Failed to connect to Cookidoo",
+      "invalid_auth": "Invalid email or password",
+      "unknown": "Unexpected error"
+    },
+    "step": {
+      "language": {
+        "data": {
+          "language": "Language"
+        },
+        "data_description": {
+          "language": "Language of your Cookidoo content."
+        },
+        "title": "Set up Thermomix"
+      },
+      "reauth_confirm": {
+        "data": {
+          "email": "Email",
+          "password": "Password"
+        },
+        "description": "Log in to Cookidoo again to keep receiving your Thermomix state.",
+        "title": "Log in to Cookidoo again"
+      },
+      "user": {
+        "data": {
+          "country": "Country",
+          "email": "Email",
+          "password": "Password"
+        },
+        "data_description": {
+          "country": "Country of your Cookidoo account.",
+          "email": "Email of the Cookidoo account your Thermomix is linked to.",
+          "password": "Password of that Cookidoo account."
+        },
+        "description": "Remote monitoring must be enabled on the Thermomix (Settings → Remote monitoring) for cooking updates to arrive.",
+        "title": "Set up Thermomix"
+      }
+    }
+  },
+  "entity": {
+    "binary_sensor": {
+      "connected": {
+        "name": "Push connection"
+      },
+      "cooking": {
+        "name": "Cooking"
+      }
+    },
+    "event": {
+      "cooking": {
+        "name": "Cooking event",
+        "state_attributes": {
+          "event_type": {
+            "state": {
+              "acknowledged": "Acknowledged",
+              "cleared": "Cleared",
+              "done": "Done",
+              "message": "Message",
+              "paused": "Paused",
+              "resumed": "Resumed",
+              "stale": "Stale",
+              "started": "Started",
+              "step_changed": "Step changed",
+              "updated": "Updated"
+            }
+          }
+        }
+      }
+    },
+    "sensor": {
+      "current_temperature": {
+        "name": "Current temperature"
+      },
+      "finish_time": {
+        "name": "Step finish time"
+      },
+      "last_update": {
+        "name": "Last update"
+      },
+      "message": {
+        "name": "Message"
+      },
+      "recipe": {
+        "name": "Recipe"
+      },
+      "remaining_time": {
+        "name": "Remaining time"
+      },
+      "state": {
+        "name": "Cooking state",
+        "state": {
+          "acknowledged": "Acknowledged",
+          "done": "Done",
+          "idle": "Idle",
+          "paused": "Paused",
+          "running": "Running",
+          "stale": "Stale"
+        }
+      },
+      "step": {
+        "name": "Current step"
+      },
+      "target_temperature": {
+        "name": "Target temperature"
+      }
+    }
+  }
+}

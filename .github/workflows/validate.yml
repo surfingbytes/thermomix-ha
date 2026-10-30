@@ -1,0 +1,40 @@
+name: Validate
+
+on:
+  push:
+  pull_request:
+  schedule:
+    - cron: "0 4 * * 1"
+  workflow_dispatch:
+
+jobs:
+  hassfest:
+    name: Hassfest
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: home-assistant/actions/hassfest@master
+
+  hacs:
+    name: HACS
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: hacs/action@main
+        with:
+          category: integration
+          # Drop once the domain has a logo in home-assistant/brands.
+          ignore: brands
+
+  tests:
+    name: Tests
+    runs-on: ubuntu-latest
+    container: ghcr.io/home-assistant/home-assistant:stable
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install test dependencies
+        run: |
+          pip install --root-user-action=ignore --no-deps pytest-homeassistant-custom-component
+          pip install --root-user-action=ignore -r requirements_test.txt
+      - name: Run tests
+        run: python -m pytest -q -p no:cacheprovider

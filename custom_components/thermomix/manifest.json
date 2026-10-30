@@ -1,0 +1,14 @@
+{
+  "domain": "thermomix",
+  "name": "Thermomix",
+  "codeowners": ["@surfingbytes"],
+  "config_flow": true,
+  "dependencies": [],
+  "documentation": "https://github.com/surfingbytes/thermomix-ha",
+  "integration_type": "hub",
+  "iot_class": "cloud_push",
+  "issue_tracker": "https://github.com/surfingbytes/thermomix-ha/issues",
+  "loggers": ["cookidoo_api", "firebase_messaging"],
+  "requirements": ["cookidoo-api>=0.18.4", "firebase-messaging>=0.4.5,<0.5"],
+  "version": "0.1.0"
+}
