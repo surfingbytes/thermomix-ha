@@ -35,7 +35,7 @@ class ThermomixEntity(Entity):
         self._attr_device_info = DeviceInfo(
             identifiers={(DOMAIN, device.device_id)},
             manufacturer=MANUFACTURER,
-            model=monitor.model_name,
+            model=monitor.model_name(device),
             name=monitor.device_name(device),
         )
 

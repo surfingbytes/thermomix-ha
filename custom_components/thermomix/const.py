@@ -6,7 +6,8 @@ DOMAIN = "thermomix"
 MANUFACTURER = "Vorwerk"
 
 CONF_MOBILE_APP_ID = "mobile_app_id"
-CONF_KNOWN_DEVICES = "known_devices"
+CONF_KNOWN_DEVICES = "known_devices"  # legacy, migrated to CONF_DEVICE_MAP
+CONF_DEVICE_MAP = "device_map"
 CONF_MODELS = "models"
 
 STORAGE_VERSION = 1

@@ -34,6 +34,7 @@ from homeassistant.helpers.storage import Store
 from homeassistant.util import dt as dt_util
 
 from .const import (
+    CONF_DEVICE_MAP,
     CONF_KNOWN_DEVICES,
     CONF_MOBILE_APP_ID,
     CONF_MODELS,
@@ -97,7 +98,11 @@ def parse_step(step: str | None) -> tuple[int | None, int | None]:
 class ThermomixDeviceState:
     """Last known cook state of one appliance."""
 
+    # Stable HA-side key (one slot per paired appliance); entity unique ids use it.
     device_id: str
+    model: str | None = None
+    # Opaque remote-monitoring id, known once Cookidoo lists it or a push arrives.
+    rmi_device_id: str | None = None
     activity: CookidooCookingActivity | None = None
     raw: dict[str, Any] = field(default_factory=dict)
     dismissal_at: datetime | None = None
@@ -218,6 +223,7 @@ class ThermomixDeviceState:
         """Serialise the state for events and attributes."""
         return {
             "device_id": self.device_id,
+            "model": self.model,
             "state": self.state,
             "cooking_activity_id": (
                 self.activity.cooking_activity_id if self.activity else None
@@ -292,18 +298,22 @@ class ThermomixMonitor:
         """The registered FCM token (diagnostics)."""
         return self._receiver.token if self._receiver else None
 
-    @property
-    def model_name(self) -> str:
+    @staticmethod
+    def model_name(device: ThermomixDeviceState) -> str:
         """Model shown on the device card."""
-        if len(self.models) == 1:
-            return f"Thermomix {self.models[0]}"
-        return "Thermomix"
+        return f"Thermomix {device.model}" if device.model else "Thermomix"
 
     def device_name(self, device: ThermomixDeviceState) -> str:
         """Name of the HA device for an appliance."""
-        if len(self.devices) <= 1:
-            return self.model_name
-        return f"{self.model_name} {device.device_id[:6]}"
+        name = self.model_name(device)
+        same = [d for d in self.devices.values() if self.model_name(d) == name]
+        if len(same) <= 1:
+            return name
+        return f"{name} {same.index(device) + 1}"
+
+    @property
+    def _account_key(self) -> str:
+        return self.entry.unique_id or self.entry.entry_id
 
     # --- lifecycle -------------------------------------------------------
 
@@ -320,14 +330,31 @@ class ThermomixMonitor:
         except CookidooException as err:
             _LOGGER.debug("Could not list paired appliances: %s", err)
 
-        for device_id in self.entry.data.get(CONF_KNOWN_DEVICES, []):
-            self._ensure_device(device_id, notify=False)
+        # One device per paired appliance, available right away (idle) even
+        # while the appliance is offline and Cookidoo lists no monitoring id.
+        for index, model in enumerate(self.models):
+            self._ensure_slot(f"{self._account_key}_{index}", model, notify=False)
+
+        # Restore the remote-monitoring id -> slot mapping from earlier runs.
+        # Older versions keyed devices by the remote-monitoring id itself.
+        device_map: dict[str, str] = dict(self.entry.data.get(CONF_DEVICE_MAP, {}))
+        for rmi_id in self.entry.data.get(CONF_KNOWN_DEVICES, []):
+            device_map.setdefault(rmi_id, rmi_id)
+        for rmi_id, slot in device_map.items():
+            device, _ = self._ensure_slot(slot, None, notify=False)
+            device.rmi_device_id = rmi_id
+
         try:
-            for device_id in await self.cookidoo.get_monitored_device_ids():
-                self._ensure_device(device_id, notify=False)
+            monitored = await self.cookidoo.get_monitored_device_ids()
         except CookidooException as err:
             _LOGGER.warning("Could not list monitored appliances: %s", err)
-        self._persist_known_devices()
+            monitored = []
+        _LOGGER.debug(
+            "Paired appliances: %s, monitored now: %d", self.models, len(monitored)
+        )
+        for rmi_id in monitored:
+            self._device_for_rmi(rmi_id, notify=False)
+        self._persist_devices()
 
         await self._async_start_receiver()
         self._ticker = async_track_time_interval(self.hass, self._tick, TICK_INTERVAL)
@@ -397,29 +424,57 @@ class ThermomixMonitor:
 
     # --- devices ---------------------------------------------------------
 
-    def _ensure_device(
-        self, device_id: str, notify: bool = True
+    def _ensure_slot(
+        self, slot: str, model: str | None, notify: bool = True
     ) -> tuple[ThermomixDeviceState, bool]:
-        if (device := self.devices.get(device_id)) is not None:
+        if (device := self.devices.get(slot)) is not None:
+            if model and not device.model:
+                device.model = model
             return device, False
-        device = ThermomixDeviceState(device_id)
-        self.devices[device_id] = device
+        device = ThermomixDeviceState(slot, model=model)
+        self.devices[slot] = device
         if notify:
-            self._persist_known_devices()
             async_dispatcher_send(self.hass, self.signal_new_device, device)
         return device, True
 
-    def _persist_known_devices(self) -> None:
-        known = sorted(self.devices)
+    def _device_for_rmi(
+        self, rmi_id: str, notify: bool = True
+    ) -> ThermomixDeviceState:
+        """Return the device for a remote-monitoring id, assigning a slot.
+
+        The remote-monitoring id is opaque and cannot be matched to a paired
+        appliance, so an unknown id takes the first slot without one; with a
+        single Thermomix on the account that is always correct.
+        """
+        for device in self.devices.values():
+            if device.rmi_device_id == rmi_id:
+                return device
+        free = next(
+            (d for d in self.devices.values() if d.rmi_device_id is None), None
+        )
+        if free is None:
+            free, _ = self._ensure_slot(rmi_id, None, notify=notify)
+        free.rmi_device_id = rmi_id
+        if notify:
+            self._persist_devices()
+        return free
+
+    def _persist_devices(self) -> None:
+        device_map = {
+            d.rmi_device_id: d.device_id
+            for d in self.devices.values()
+            if d.rmi_device_id is not None
+        }
         data = self.entry.data
-        if known == list(data.get(CONF_KNOWN_DEVICES, [])) and self.models == list(
-            data.get(CONF_MODELS, [])
+        if (
+            device_map == data.get(CONF_DEVICE_MAP, {})
+            and self.models == list(data.get(CONF_MODELS, []))
+            and CONF_KNOWN_DEVICES not in data
         ):
             return
-        self.hass.config_entries.async_update_entry(
-            self.entry,
-            data={**data, CONF_KNOWN_DEVICES: known, CONF_MODELS: self.models},
-        )
+        new_data = {**data, CONF_DEVICE_MAP: device_map, CONF_MODELS: self.models}
+        new_data.pop(CONF_KNOWN_DEVICES, None)
+        self.hass.config_entries.async_update_entry(self.entry, data=new_data)
 
     # --- pushes ----------------------------------------------------------
 
@@ -433,7 +488,7 @@ class ThermomixMonitor:
             return
         _LOGGER.debug("Cook state push: %s", raw)
 
-        device, _ = self._ensure_device(activity.device_id)
+        device = self._device_for_rmi(activity.device_id)
         prev_state = device.state
         prev_step = device.step
         prev_message = device.message_body

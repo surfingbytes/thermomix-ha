@@ -8,11 +8,18 @@ from homeassistant.components.diagnostics import async_redact_data
 from homeassistant.const import CONF_EMAIL, CONF_PASSWORD, CONF_TOKEN
 from homeassistant.core import HomeAssistant
 
-from .const import CONF_KNOWN_DEVICES, CONF_MOBILE_APP_ID
+from .const import CONF_DEVICE_MAP, CONF_KNOWN_DEVICES, CONF_MOBILE_APP_ID
 from .monitor import ThermomixConfigEntry
 
-TO_REDACT = {CONF_EMAIL, CONF_PASSWORD, CONF_TOKEN, CONF_MOBILE_APP_ID, CONF_KNOWN_DEVICES}
-RAW_TO_REDACT = {"deviceId"}
+TO_REDACT = {
+    CONF_EMAIL,
+    CONF_PASSWORD,
+    CONF_TOKEN,
+    CONF_MOBILE_APP_ID,
+    CONF_KNOWN_DEVICES,
+    CONF_DEVICE_MAP,
+}
+RAW_TO_REDACT = {"deviceId", "device_id"}
 
 
 async def async_get_config_entry_diagnostics(
@@ -27,6 +34,8 @@ async def async_get_config_entry_diagnostics(
         "models": monitor.models,
         "devices": [
             {
+                "model": device.model,
+                "monitoring_id_known": device.rmi_device_id is not None,
                 "state": device.state,
                 "last_update": device.last_update,
                 "dismissal_at": device.dismissal_at,

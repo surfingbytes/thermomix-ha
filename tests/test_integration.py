@@ -65,7 +65,7 @@ async def test_setup_creates_idle_entities(
     assert hass.states.get("sensor.thermomix_tm7_current_step").state == "unknown"
     assert hass.states.get("binary_sensor.thermomix_tm7_cooking").state == "off"
     assert hass.states.get("binary_sensor.thermomix_tm7_push_connection").state == "on"
-    assert config_entry.data["known_devices"] == [DEVICE_ID]
+    assert config_entry.data["device_map"] == {DEVICE_ID: "user-1_0"}
     assert config_entry.data["models"] == ["TM7"]
 
     await hass.config_entries.async_unload(config_entry.entry_id)
@@ -176,21 +176,81 @@ async def test_stale_and_dismissal_timers(
     assert hass.states.get("sensor.thermomix_tm7_current_step").state == "unknown"
 
 
-async def test_unknown_device_gets_entities_on_first_push(
+async def test_offline_appliance_has_device_before_first_push(
     hass: HomeAssistant,
     config_entry: MockConfigEntry,
     mock_cookidoo: MagicMock,
     mock_receiver: MagicMock,
 ) -> None:
-    """An appliance that was offline at startup appears with its first push."""
+    """A paired appliance that is offline at startup still gets a device."""
     mock_cookidoo.get_monitored_device_ids.return_value = []
     await _setup(hass, config_entry)
-    assert hass.states.get("sensor.thermomix_tm7_cooking_state") is None
+    assert hass.states.get("sensor.thermomix_tm7_cooking_state").state == "idle"
+    assert config_entry.data["device_map"] == {}
 
+    # Its first push is attached to that device, not a new one.
     _push(mock_receiver, PUSH_RUNNING)
     await hass.async_block_till_done()
     assert hass.states.get("sensor.thermomix_tm7_cooking_state").state == "running"
-    assert config_entry.data["known_devices"] == [DEVICE_ID]
+    assert config_entry.data["device_map"] == {DEVICE_ID: "user-1_0"}
+    assert len(hass.states.async_entity_ids("sensor")) == 9
+
+
+async def test_mapping_survives_restart(
+    hass: HomeAssistant,
+    config_entry: MockConfigEntry,
+    mock_cookidoo: MagicMock,
+    mock_receiver: MagicMock,
+) -> None:
+    """A stored mapping keeps the push on the same device after a reload."""
+    mock_cookidoo.get_monitored_device_ids.return_value = []
+    await _setup(hass, config_entry)
+    _push(mock_receiver, PUSH_RUNNING)
+    await hass.async_block_till_done()
+
+    assert await hass.config_entries.async_reload(config_entry.entry_id)
+    await hass.async_block_till_done()
+    _push(mock_receiver, {**PUSH_RUNNING, "trailingText": "7/9"})
+    await hass.async_block_till_done()
+    assert hass.states.get("sensor.thermomix_tm7_current_step").state == "7/9"
+    assert config_entry.data["device_map"] == {DEVICE_ID: "user-1_0"}
+
+
+async def test_unlisted_appliance_gets_device_on_first_push(
+    hass: HomeAssistant,
+    config_entry: MockConfigEntry,
+    mock_cookidoo: MagicMock,
+    mock_receiver: MagicMock,
+) -> None:
+    """Pushes from an appliance Cookidoo did not list still create a device."""
+    mock_cookidoo.get_devices.return_value = []
+    mock_cookidoo.get_monitored_device_ids.return_value = []
+    await _setup(hass, config_entry)
+    assert hass.states.get("sensor.thermomix_cooking_state") is None
+
+    _push(mock_receiver, PUSH_RUNNING)
+    await hass.async_block_till_done()
+    assert hass.states.get("sensor.thermomix_cooking_state").state == "running"
+    assert config_entry.data["device_map"] == {DEVICE_ID: DEVICE_ID}
+
+
+async def test_legacy_known_devices_are_migrated(
+    hass: HomeAssistant,
+    mock_cookidoo: MagicMock,
+    mock_receiver: MagicMock,
+    config_entry: MockConfigEntry,
+) -> None:
+    """Entries from 0.1.0 keep their remote-monitoring keyed device."""
+    mock_cookidoo.get_devices.return_value = []
+    config_entry = MockConfigEntry(
+        domain=config_entry.domain,
+        unique_id=config_entry.unique_id,
+        data={**config_entry.data, "known_devices": [DEVICE_ID]},
+    )
+    await _setup(hass, config_entry)
+    assert "known_devices" not in config_entry.data
+    assert config_entry.data["device_map"] == {DEVICE_ID: DEVICE_ID}
+    assert hass.states.get("sensor.thermomix_cooking_state").state == "idle"
 
 
 async def test_remaining_time_ticks(
