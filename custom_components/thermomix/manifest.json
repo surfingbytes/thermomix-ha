@@ -1,6 +1,7 @@
 {
   "domain": "thermomix",
   "name": "Thermomix",
+  "categories": ["appliances_cleaning.cooking"],
   "codeowners": ["@surfingbytes"],
   "config_flow": true,
   "dependencies": [],
