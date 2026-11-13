@@ -17,6 +17,7 @@ import asyncio
 from collections.abc import Callable
 import json
 import logging
+import re
 from typing import Any
 
 from aiohttp import ClientSession
@@ -44,6 +45,48 @@ FCM_CHECKIN_RETRY_DELAY_S = 2
 PUSH_NESTED_PAYLOAD_KEYS = ("cookingActivity", "remoteMonitoringInfo")
 
 PushCallback = Callable[[CookidooCookingActivity, dict[str, Any]], None]
+
+# Temperature fields arrive as display text ("85°", "100 °C"); the library
+# only parses plain numbers.
+PUSH_TEMPERATURE_KEYS = ("primaryInfo", "secondaryInfo")
+_DEGREE_SUFFIX = re.compile(r"\s*°\s*[CF]?\s*$")
+
+
+def _strip_degrees(payload: dict[str, Any]) -> dict[str, Any]:
+    """Return the payload with the degree sign removed from temperatures."""
+    cleaned = dict(payload)
+    for key in PUSH_TEMPERATURE_KEYS:
+        value = cleaned.get(key)
+        if isinstance(value, str):
+            cleaned[key] = _DEGREE_SUFFIX.sub("", value)
+    return cleaned
+
+
+def _b64_field(value: str) -> str:
+    """Return a base64url field cut at its first parameter and padded.
+
+    The crypto-key and encryption headers of Cookidoo pushes carry unpadded
+    base64url (and may carry more ``;key=value`` parameters), which
+    firebase-messaging 0.4.x decodes as-is and fails with "Incorrect padding",
+    shutting the whole push client down.
+    """
+    value = value.split(";", 1)[0].strip()
+    return value + "=" * (-len(value) % 4)
+
+
+class _PaddedFcmPushClient(FcmPushClient):
+    """FcmPushClient that tolerates unpadded crypto-key and salt values."""
+
+    @staticmethod
+    def _decrypt_raw_data(
+        credentials: dict[str, dict[str, str]],
+        crypto_key_str: str,
+        salt_str: str,
+        raw_data: bytes,
+    ) -> bytes:
+        return FcmPushClient._decrypt_raw_data(
+            credentials, _b64_field(crypto_key_str), _b64_field(salt_str), raw_data
+        )
 
 
 def cook_state_payload(message: Any) -> dict[str, Any] | None:
@@ -135,7 +178,7 @@ class ThermomixPushReceiver:
         CookidooParseException from the registration, RuntimeError when the
         Firebase check-in keeps failing.
         """
-        client = FcmPushClient(
+        client = _PaddedFcmPushClient(
             self._handle_message,
             FcmRegisterConfig(
                 project_id=FCM_PROJECT_ID,
@@ -190,7 +233,7 @@ class ThermomixPushReceiver:
             _LOGGER.debug("Ignoring a push without cook state: %s", sorted(message))
             return
         try:
-            activity = cooking_activity_from_push(payload)
+            activity = cooking_activity_from_push(_strip_degrees(payload))
         except (ValueError, TypeError, KeyError):
             _LOGGER.warning("Could not decode a cook-state push: %s", payload)
             return

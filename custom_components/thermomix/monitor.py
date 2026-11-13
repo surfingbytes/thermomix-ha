@@ -13,6 +13,7 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from functools import partial
 import logging
+import time
 from typing import Any
 
 from cookidoo_api import (
@@ -78,7 +79,9 @@ def parse_push_timestamp(value: object) -> datetime | None:
     if not text:
         return None
     if text.isdigit():
-        return dt_util.utc_from_timestamp(int(text) / 1000)
+        # Cookidoo sends epoch seconds; accept milliseconds as well.
+        number = int(text)
+        return dt_util.utc_from_timestamp(number / 1000 if number > 1e12 else number)
     parsed = dt_util.parse_datetime(text)
     return dt_util.as_utc(parsed) if parsed is not None else None
 
@@ -245,6 +248,10 @@ class ThermomixDeviceState:
         }
 
 
+# Wait between two attempts to reconnect a dropped push receiver.
+RECEIVER_RETRY_S = 300
+
+
 class ThermomixMonitor:
     """Owns the push receiver and the state of every appliance on the account."""
 
@@ -263,6 +270,8 @@ class ThermomixMonitor:
         self._receiver: ThermomixPushReceiver | None = None
         self._timers: dict[str, dict[str, CALLBACK_TYPE]] = {}
         self._ticker: CALLBACK_TYPE | None = None
+        self._restarting = False
+        self._last_restart: float | None = None
 
     # --- signals ---------------------------------------------------------
 
@@ -503,6 +512,10 @@ class ThermomixMonitor:
         device.dismissal_at = parse_push_timestamp(
             raw.get("dismissalDate", raw.get("dismissalTimestamp"))
         )
+        if device.state == STATE_DONE and device.dismissal_at is None:
+            # A finished cook without a dismissal date would otherwise linger
+            # as stale forever (switching the appliance off sends nothing).
+            device.dismissal_at = device.stale_at
 
         self._schedule_device_timers(device)
         async_dispatcher_send(self.hass, self.signal_update(device.device_id))
@@ -511,6 +524,12 @@ class ThermomixMonitor:
             device, prev_state, prev_step, prev_message, prev_activity_id
         ):
             self._emit(device, event_type)
+
+        if device.state == STATE_ACKNOWLEDGED:
+            # Confirmed on the appliance: the cook is over. These pushes carry
+            # no dismissal date and no further push follows, so clear it now.
+            self._cancel_device_timers(device.device_id)
+            self._dismiss(device.device_id, device.last_update)
 
     @staticmethod
     def _derive_events(
@@ -606,3 +625,37 @@ class ThermomixMonitor:
     @callback
     def _tick(self, _now: datetime) -> None:
         async_dispatcher_send(self.hass, self.signal_tick)
+        self._check_receiver()
+
+    @callback
+    def _check_receiver(self) -> None:
+        """Restart the push receiver when Firebase dropped it."""
+        if self._restarting or (
+            self._receiver is not None and self._receiver.is_connected
+        ):
+            return
+        if (
+            self._last_restart is not None
+            and time.monotonic() - self._last_restart < RECEIVER_RETRY_S
+        ):
+            return
+        self._restarting = True
+        self.entry.async_create_background_task(
+            self.hass, self._async_restart_receiver(), "thermomix_restart_receiver"
+        )
+
+    async def _async_restart_receiver(self) -> None:
+        _LOGGER.warning("Thermomix push connection lost, reconnecting")
+        try:
+            if self._receiver is not None:
+                receiver, self._receiver = self._receiver, None
+                try:
+                    await receiver.stop()
+                except Exception:  # noqa: BLE001
+                    _LOGGER.debug("Stopping the old receiver failed", exc_info=True)
+            await self._async_start_receiver()
+        except (ConfigEntryAuthFailed, ConfigEntryNotReady) as err:
+            _LOGGER.warning("Reconnecting the Thermomix push receiver failed: %s", err)
+        finally:
+            self._last_restart = time.monotonic()
+            self._restarting = False

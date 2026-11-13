@@ -42,6 +42,8 @@ def test_parse_helpers() -> None:
     assert parse_step(None) == (None, None)
     assert parse_step("garbage") == (None, None)
     assert parse_push_timestamp("1787924895000").isoformat() == "2026-08-28T13:48:15+00:00"
+    # TM7 pushes carry epoch seconds.
+    assert parse_push_timestamp("1787924895").isoformat() == "2026-08-28T13:48:15+00:00"
     assert parse_push_timestamp("2026-08-28T13:37:48Z").isoformat() == "2026-08-28T13:37:48+00:00"
     assert parse_push_timestamp(None) is None
 
@@ -272,3 +274,62 @@ async def test_remaining_time_ticks(
     await hass.async_block_till_done()
     after = float(hass.states.get("sensor.thermomix_tm7_remaining_time").state)
     assert before - after == pytest.approx(1.0)
+
+
+async def test_dropped_push_connection_reconnects(
+    hass: HomeAssistant,
+    config_entry: MockConfigEntry,
+    mock_cookidoo: MagicMock,
+    mock_receiver: MagicMock,
+    freezer: FrozenDateTimeFactory,
+) -> None:
+    """A receiver Firebase shut down is replaced, at most once per retry window."""
+    freezer.move_to("2026-08-28T13:30:00Z")
+    await _setup(hass, config_entry)
+    receiver = mock_receiver.return_value
+    assert receiver.start.await_count == 1
+
+    receiver.is_connected = False
+    freezer.tick(timedelta(seconds=31))
+    async_fire_time_changed(hass)
+    await hass.async_block_till_done()
+    assert receiver.stop.await_count == 1
+    assert receiver.start.await_count == 2
+
+    # Still down: no new attempt before the retry window has passed.
+    freezer.tick(timedelta(seconds=31))
+    async_fire_time_changed(hass)
+    await hass.async_block_till_done()
+    assert receiver.start.await_count == 2
+
+
+async def test_finished_cook_is_cleared(
+    hass: HomeAssistant,
+    config_entry: MockConfigEntry,
+    mock_cookidoo: MagicMock,
+    mock_receiver: MagicMock,
+    freezer: FrozenDateTimeFactory,
+) -> None:
+    """Acknowledged clears at once; done without a dismissal date at stale time."""
+    freezer.move_to("2026-08-28T13:30:00Z")
+    await _setup(hass, config_entry)
+    events: list[Event] = []
+    hass.bus.async_listen(EVENT_COOKING_UPDATE, events.append)
+    finished = {k: v for k, v in PUSH_RUNNING.items() if k != "dismissalDate"}
+
+    _push(mock_receiver, {**finished, "state": "done"})
+    await hass.async_block_till_done()
+    assert hass.states.get("sensor.thermomix_tm7_cooking_state").state == "done"
+
+    # staleDate = 13:48:15Z
+    freezer.move_to("2026-08-28T13:48:20Z")
+    async_fire_time_changed(hass)
+    await hass.async_block_till_done()
+    assert hass.states.get("sensor.thermomix_tm7_cooking_state").state == "idle"
+    assert hass.states.get("sensor.thermomix_tm7_recipe").state == "unknown"
+
+    _push(mock_receiver, {**finished, "state": "acknowledged"})
+    await hass.async_block_till_done()
+    assert hass.states.get("sensor.thermomix_tm7_cooking_state").state == "idle"
+    assert hass.states.get("sensor.thermomix_tm7_recipe").state == "unknown"
+    assert [e.data["type"] for e in events][-2:] == ["acknowledged", "cleared"]
